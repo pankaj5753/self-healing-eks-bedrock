@@ -13,7 +13,7 @@
 
 *"Don't just monitor. Automate."*
 
-[Architecture](#architecture) • [How It Works](#how-it-works) • [Prerequisites](#prerequisites) • [Setup](#setup) • [Demo](#demo) • [Video Walkthrough](#video-walkthrough)
+[Architecture](#architecture) • [How It Works](#how-it-works) • [Prerequisites](#prerequisites) • [Cost Estimation](#cost-estimation) • [Setup](#setup) • [Demo](#demo) • [Video Walkthrough](#video-walkthrough)
 
 </div>
 
@@ -138,6 +138,34 @@ The agent is prompted to follow a **least-disruptive-first** escalation policy:
 ### Required IAM Permissions
 
 Your Terraform user/role needs permissions to create: EKS clusters, Lambda functions, Bedrock agents, OpenSearch Serverless collections, IAM roles, S3 buckets, CloudWatch alarms, and SNS topics. An `AdministratorAccess` policy works for a demo environment.
+
+---
+
+## 💰 Cost Estimation
+
+> **Heads up:** This setup uses real AWS services that incur charges even at idle. Destroy the infrastructure with `terraform destroy` when you're done recording or testing.
+
+The table below shows estimated costs based on the default configuration (2x t3.medium EC2 worker nodes, us-east-1 region).
+
+| Service | 1 Day | 7 Days | 30 Days |
+|---------|------:|-------:|--------:|
+| OpenSearch Serverless | $11.52 | $80.64 | $345.00 |
+| NAT Gateway | $1.08 | $7.56 | $32.40 |
+| EKS Control Plane | $0.24 | $1.68 | $7.20 |
+| EC2 Worker Nodes (2x t3.medium) | $0.19 | $1.34 | $5.76 |
+| Bedrock Agent + RAG | ~$0.10 | ~$0.50 | ~$2.00 |
+| Lambda + SNS + CloudWatch | ~$0.01 | ~$0.05 | ~$0.20 |
+| S3 (runbooks) | ~$0.00 | ~$0.01 | ~$0.05 |
+| **Total estimate** | **~$13** | **~$92** | **~$393** |
+
+### ⚠️ The OpenSearch Serverless Surprise
+
+**OpenSearch Serverless is ~87% of your bill.** It charges a minimum of 2 OCUs at $0.24/OCU/hour regardless of traffic — that's ~$11.52/day even if you run zero queries. This is the biggest cost surprise for demos.
+
+**Tips to reduce costs:**
+- Run `terraform destroy` immediately after finishing your demo or recording session
+- For development/testing, consider mocking the Knowledge Base and skipping OpenSearch Serverless entirely
+- OpenSearch Serverless does not have a free tier or a "pause" option — the meter runs continuously while the collection exists
 
 ---
 
