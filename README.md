@@ -13,7 +13,7 @@
 
 *"Don't just monitor. Automate."*
 
-[Architecture](#architecture) • [How It Works](#how-it-works) • [Prerequisites](#prerequisites) • [Cost Estimation](#cost-estimation) • [Setup](#setup) • [Demo](#demo) • [Video Walkthrough](#video-walkthrough)
+[Architecture](#architecture) • [How It Works](#how-it-works) • [Prerequisites](#prerequisites) • [Cost Estimation](#cost-estimation) • [Production Alternative](#-production-alternative-10x-cheaper) • [Setup](#setup) • [Demo](#demo) • [YouTube Demo Guide](#-youtube-demo-guide) • [Video Walkthrough](#video-walkthrough)
 
 </div>
 
@@ -169,6 +169,118 @@ The table below shows estimated costs based on the default configuration (2x t3.
 
 ---
 
+## 🏭 Production Alternative (10x Cheaper)
+
+The demo uses **OpenSearch Serverless** because it requires zero configuration — ideal for a quick deploy. But at ~$345/month just for the vector store, it is not viable for production. The recommended production swap is **pgvector on Amazon RDS PostgreSQL**.
+
+### Architecture Comparison
+
+```
+DEMO SETUP (YouTube recording)          PRODUCTION SETUP (real workloads)
+──────────────────────────────          ──────────────────────────────────
+
+Failing Pod                             Failing Pod
+     │                                       │
+     ▼                                       ▼
+CloudWatch → SNS → Lambda               CloudWatch → SNS → Lambda
+                       │                                       │
+                       ▼                                       ▼
+              Bedrock Agent                       Lambda (custom ReAct loop)
+              (managed, visual)                   (direct Bedrock Runtime API)
+                       │                                       │
+              ┌────────┴────────┐                    ┌─────────┴──────────┐
+              │ Bedrock KB      │                    │ pgvector on RDS    │
+              │ OpenSearch      │                    │ PostgreSQL t3.micro │
+              │ Serverless      │                    │ (same embeddings)  │
+              └─────────────────┘                    └────────────────────┘
+                       │                                       │
+              Lambda Executor (kubectl)         Lambda Executor (kubectl)
+                       │                                       │
+                  Pod Healed                            Pod Healed
+```
+
+### Cost Comparison
+
+| Component | Demo (OpenSearch) | Production (pgvector) | Monthly Saving |
+|---|---|---|---|
+| Vector Store | OpenSearch Serverless ~$345 | RDS t3.micro + pgvector ~$15 | **$330** |
+| RAG Layer | Bedrock Knowledge Base ~$5 | Custom Lambda query ~$0.50 | **$4.50** |
+| Networking | NAT Gateway ~$32 | VPC Endpoints ~$15 | **$17** |
+| EKS + EC2 | ~$13 (already in prod) | ~$13 (already in prod) | — |
+| Bedrock (Claude) | ~$2 | ~$2 | — |
+| Lambda / SNS / CW | ~$0.20 | ~$0.20 | — |
+| **Monthly Total** | **~$393** | **~$36** | **~$357 saved** |
+
+> **~10x cost reduction** by swapping the vector store and removing the NAT Gateway.
+
+### What Changes in the Code
+
+Only two components need updating — everything else stays identical:
+
+**1. Replace OpenSearch Serverless with pgvector on RDS**
+
+```hcl
+# REMOVE from main.tf:
+resource "aws_opensearchserverless_collection" "kb" { ... }
+resource "aws_bedrockagent_knowledge_base" "runbooks" { ... }
+
+# ADD to main.tf:
+resource "aws_db_instance" "pgvector" {
+  identifier        = "self-healing-kb"
+  engine            = "postgres"
+  engine_version    = "15.4"
+  instance_class    = "db.t3.micro"
+  allocated_storage = 20
+  db_name           = "runbooks"
+  username          = "healing_agent"
+  password          = var.db_password
+  # pgvector extension enabled via RDS parameter group
+}
+```
+
+**2. Replace Bedrock Agent with a direct ReAct loop in Lambda**
+
+```python
+# orchestrator.py — swap invoke_agent() for a direct loop
+import boto3, json
+
+bedrock = boto3.client("bedrock-runtime")
+db      = boto3.client("rds-data")
+
+def react_loop(alert_context):
+    messages = [{"role": "user", "content": build_prompt(alert_context)}]
+    for _ in range(10):                         # max 10 reasoning steps
+        response = bedrock.invoke_model(
+            modelId="anthropic.claude-3-5-sonnet-20241022-v2:0",
+            body=json.dumps({"messages": messages, "tools": KUBECTL_TOOLS})
+        )
+        result = json.loads(response["body"].read())
+        if result["stop_reason"] == "end_turn":
+            return result                       # agent finished
+        messages = handle_tool_use(messages, result)   # run kubectl, loop
+```
+
+**3. Replace NAT Gateway with VPC Endpoints**
+
+```hcl
+# Add endpoints for each AWS service Lambda calls — no NAT needed
+resource "aws_vpc_endpoint" "bedrock"     { service_name = "com.amazonaws.us-east-1.bedrock-runtime" }
+resource "aws_vpc_endpoint" "s3"          { service_name = "com.amazonaws.us-east-1.s3" }
+resource "aws_vpc_endpoint" "cloudwatch"  { service_name = "com.amazonaws.us-east-1.logs" }
+```
+
+### Why pgvector is Production-Ready
+
+| Concern | Answer |
+|---|---|
+| Scale | Handles millions of embeddings with IVFFlat / HNSW indexes |
+| Ops | RDS Multi-AZ gives 99.95% uptime SLA, automated backups |
+| Familiarity | Any engineer who knows PostgreSQL can query, inspect, and tune it |
+| Migration | Same Titan Embed model — re-embed runbooks once, import to pg |
+| Search quality | Cosine similarity on 1536-dim vectors matches OpenSearch quality |
+
+---
+
 ## 🚀 Setup
 
 ### 1. Clone and configure
@@ -294,11 +406,50 @@ self-healing-eks-bedrock/
 
 ---
 
+## 🎥 YouTube Demo Guide
+
+This section is a script reference for the live YouTube walkthrough. The demo uses the full OpenSearch Serverless setup (best visuals), then pivots to the production alternative for the final segment.
+
+### Pre-Recording Checklist
+
+- [ ] Do a **dry run the day before** — the Bedrock Agent alias (Step 5) and KB sync are the two steps most likely to have timing issues on first deploy
+- [ ] Run `terraform apply` and verify `kubectl get nodes` returns 2 Ready nodes
+- [ ] Deploy `demo/failing-pod.yaml` once to confirm CrashLoopBackOff triggers correctly
+- [ ] Open these tabs in advance: AWS Console (Bedrock Agent, CloudWatch Logs, EKS), terminal with `kubectl get pods -w` ready
+- [ ] Run `terraform destroy` after recording — leaving it up costs ~$13/day
+
+### Suggested Video Structure (~12 minutes)
+
+| Timestamp | Segment | What to Show |
+|---|---|---|
+| 0:00 – 1:00 | Problem statement | "2 AM page, CrashLoopBackOff, 45 min of log-diving" |
+| 1:00 – 3:00 | Architecture walkthrough | Draw the diagram, tour the AWS Console resources |
+| 3:00 – 4:00 | Deploy failing pod | `kubectl apply -f demo/failing-pod.yaml` + `kubectl get pods -w` |
+| 4:00 – 6:30 | Trigger the agent | Publish SNS message, switch to CloudWatch Logs |
+| 6:30 – 8:00 | Watch the ReAct trace | Show THINKING → ACTION → OBSERVE → VERIFY in logs |
+| 8:00 – 8:30 | Pod recovery | `kubectl get pods` shows Running — the "wow moment" |
+| 8:30 – 10:30 | Production alternative | Side-by-side architecture diagram, cost comparison table |
+| 10:30 – 11:30 | pgvector code walkthrough | Show the Terraform diff and orchestrator.py ReAct loop |
+| 11:30 – 12:00 | `terraform destroy` + CTA | Destroy live on screen, mention GitHub link |
+
+### Key Talking Points
+
+**On the demo setup:**
+> *"We're using OpenSearch Serverless here because it deploys in one `terraform apply` with zero config. That's perfect for a demo. But in production, you'd swap it out — and that swap cuts your monthly bill from $393 to about $36."*
+
+**On the ReAct trace (CloudWatch Logs segment):**
+> *"This is what makes this different from a script. Watch the agent reason — it doesn't just blindly restart the pod. It fetches the logs, reads the runbook, thinks about the root cause, then picks the least-disruptive action. If it's not confident enough, it escalates to a human instead of guessing."*
+
+**On the production alternative:**
+> *"OpenSearch Serverless is 87% of the bill — $345 a month — because it charges for 2 compute units 24/7 whether you have traffic or not. pgvector on RDS runs on a $15/month t3.micro and gives you the exact same vector similarity search. Same embeddings, same search quality, a tenth of the cost."*
+
+---
+
 ## 📺 Video Walkthrough
 
 Full 12-minute technical demo on YouTube: *[link coming soon]*
 
-Covers: live demo of a pod healing, Terraform walkthrough, agent thought trace explanation, and the RAG architecture.
+Covers: live demo of a pod healing, Terraform walkthrough, agent thought trace explanation, RAG architecture, and the production cost-optimised alternative.
 
 ---
 
