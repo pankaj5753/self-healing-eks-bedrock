@@ -1,0 +1,31 @@
+# Terraform
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.backup
+*.tfplan
+tfplan
+*.tfvars
+!example.tfvars
+
+# Lambda build artifacts
+/tmp/
+*.zip
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.env
+venv/
+
+# AWS credentials - NEVER commit these
+.aws/
+credentials
+*_credentials.json
+
+# IDE
+.vscode/
+.idea/
+*.swp
+.DS_Store

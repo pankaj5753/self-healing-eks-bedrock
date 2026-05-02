@@ -1,0 +1,52 @@
+# Demo: Intentionally failing pod for the YouTube video
+# This pod will CrashLoopBackOff due to OOM (memory limit too low)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: demo-app
+  namespace: default
+  labels:
+    app: demo-app
+    demo: "self-healing"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: demo-app
+  template:
+    metadata:
+      labels:
+        app: demo-app
+    spec:
+      containers:
+      - name: demo-app
+        image: nginx:latest
+        resources:
+          requests:
+            memory: "4Mi"   # intentionally too low → OOMKilled
+            cpu: "50m"
+          limits:
+            memory: "8Mi"   # will trigger OOMKilled immediately
+            cpu: "100m"
+        env:
+        - name: APP_ENV
+          value: "demo"
+---
+# A second pod that will CrashLoop due to bad command
+apiVersion: v1
+kind: Pod
+metadata:
+  name: crashloop-demo
+  namespace: default
+  labels:
+    demo: "self-healing"
+spec:
+  containers:
+  - name: crashloop-demo
+    image: busybox
+    command: ["/bin/sh", "-c", "echo 'Starting...' && sleep 5 && exit 1"]
+    resources:
+      limits:
+        memory: "64Mi"
+        cpu: "100m"
+  restartPolicy: Always
